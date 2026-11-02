@@ -117,7 +117,7 @@ PRE = {'safe': dict(riskPct=0.4, lev=3, sizePct=5, maxOpen=2, minConf=72, slAtr=
        'turbo': dict(riskPct=0.35, lev=4, sizePct=10, maxOpen=1, minConf=65, slAtr=1.4, rr=2.2, lockR=1.0, trailGive=.25)}
 CFG, META, JOURNAL, COOL, LASTE = {}, {}, [], {}, {}
 FI, T, KC, SIG, POS, BAL, LOGS = {}, {}, {}, {}, [], dict(wallet=0, avail=0), []
-ST = dict(run=False, halt='', haltDay='', flat=False, flatUntil=0, dual=False, upd=0, statsAt=0, n=0)
+ST = dict(run=False, halt='', haltDay='', flat=False, flatUntil=0, dual=False, upd=0, statsAt=0, n=0, rbase=0, rbaseDay='')
 DAYNET = dict(t=0, v=0); CLOSING, OPENING, EP, NOTE = {}, set(), {}, {}
 LOCK = threading.Lock(); POOL = ThreadPoolExecutor(5)
 
@@ -136,7 +136,7 @@ def note(tag, e):
 def save():
     with LOCK:
         try:
-            json.dump(dict(cfg=CFG, meta=META, journal=JOURNAL[:600], cool=COOL, laste=LASTE, run=ST['run'], halt=ST['halt'], haltDay=ST['haltDay']), open(SF + '.tmp', 'w'))
+            json.dump(dict(cfg=CFG, meta=META, journal=JOURNAL[:600], cool=COOL, laste=LASTE, run=ST['run'], halt=ST['halt'], haltDay=ST['haltDay'], rbase=ST['rbase'], rbaseDay=ST['rbaseDay']), open(SF + '.tmp', 'w'))
             os.replace(SF + '.tmp', SF)
         except Exception: pass
 
@@ -144,7 +144,7 @@ def load():
     try: d = json.load(open(SF))
     except Exception: return
     CFG.update(d.get('cfg', {})); META.update(d.get('meta', {})); JOURNAL[:] = d.get('journal', []); COOL.update(d.get('cool', {})); LASTE.update(d.get('laste', {}))
-    ST.update(run=bool(d.get('run')) and bool(CFG), halt=d.get('halt', ''), haltDay=d.get('haltDay', ''))
+    ST.update(run=bool(d.get('run')) and bool(CFG), halt=d.get('halt', ''), haltDay=d.get('haltDay', ''), rbase=d.get('rbase', 0), rbaseDay=d.get('rbaseDay', ''))
 
 # ---------------------------------------------------------------- helpers
 def dec(x):
@@ -523,6 +523,7 @@ def risk_guard():
         return
     if now() - DAYNET['t'] > 120000: return
     tot, sb = DAYNET['v'] + sum(upnl(p) for p in POS), max(1, BAL['wallet'] - DAYNET['v'])
+    if ST['rbaseDay'] == dk: tot -= ST['rbase']  # Resume pressed today: the loss limit counts from that moment
     if E['dailyLoss'] > 0 and tot <= -E['dailyLoss'] / 100 * sb:
         ST.update(halt='Daily loss limit of %s%% reached. New trades paused until the next UTC day.' % E['dailyLoss'], haltDay=dk, flat=True, flatUntil=time.time() + 60); save()
         log('err', 'CIRCUIT BREAKER: ' + ST['halt'], True)
@@ -578,7 +579,9 @@ class H(BaseHTTPRequestHandler):
                 META[k] = v
             save(); return s.out(200, {})
         if p == '/clear': JOURNAL.clear(); save(); return s.out(200, {})
-        if p == '/resume': ST.update(halt='', haltDay=''); save(); return s.out(200, {})
+        if p == '/resume':
+            ST.update(halt='', haltDay='', flat=False, flatUntil=0, rbase=DAYNET['v'] + sum(upnl(q) for q in POS), rbaseDay=time.strftime('%Y-%m-%d', time.gmtime())); save()
+            log('info', 'Resumed by you: the daily loss limit now counts from this moment.', True); return s.out(200, {})
         if p == '/run':
             if body.get('on') and not CFG: return s.out(400, dict(error='App has not sent its settings yet'))
             ST['run'] = bool(body.get('on')); save()
